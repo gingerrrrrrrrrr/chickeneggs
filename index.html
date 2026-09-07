@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>孵小鸡模拟器</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="top-bar">
+        <span id="scene-name">主界面</span>
+        <span id="level">等级：0</span>
+        <span id="money">资金：0</span>
+        <button id="bag-btn">背包</button>
+        <button id="shop-btn">商店</button>
+        <button id="settings-btn">设置</button>
+      </div>
+
+      <div id="toast" style="display: none"></div>
+
+      <div id="scene-container">
+        <div class="scene" id="hatch-scene">
+          <h2>孵蛋场景</h2>
+          <div
+            id="hatch-grid"
+            style="
+              width: 100%;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              gap: 20px;
+              padding: 20px 0;
+            "
+          ></div>
+        </div>
+
+        <div class="scene" id="main-scene">
+          <div id="main-status"></div>
+          <div
+            style="
+              margin-top: 20px;
+              display: flex;
+              gap: 8px;
+              align-items: center;
+            "
+          >
+            <span>过</span>
+            <input
+              id="advance-days-input"
+              type="number"
+              min="1"
+              value="1"
+              style="width: 60px"
+            />
+            <span>天</span>
+            <button id="advance-days-btn">确认</button>
+          </div>
+        </div>
+
+        <div class="scene" id="brood-scene">
+          <h2>育雏场景</h2>
+          <div
+            id="brood-grid"
+            style="
+              width: 100%;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              gap: 20px;
+              padding: 20px 0;
+            "
+          ></div>
+        </div>
+      </div>
+      <div id="shop-panel" style="display: none">
+        <div class="shop-header">
+          <span>商店</span>
+          <button id="close-shop">关闭</button>
+        </div>
+
+        <div class="shop-tabs">
+          <button class="tab-btn active" data-tab="egg">蛋</button>
+          <button class="tab-btn" data-tab="chicken">鸡</button>
+          <button class="tab-btn" data-tab="tool">工具</button>
+        </div>
+
+        <input
+          class="search-input"
+          id="shop-search"
+          type="text"
+          placeholder="搜索当前分类"
+        />
+
+        <div class="shop-content" id="shop-content">
+          <!-- 商品列表会由 JavaScript 动态生成 -->
+        </div>
+      </div>
+      <div id="bag-panel" style="display: none">
+        <div class="shop-header">
+          <span>背包</span>
+          <button id="close-bag">关闭</button>
+        </div>
+
+        <div class="shop-tabs">
+          <button class="tab-btn active" data-bag-tab="egg">鸡蛋</button>
+          <button class="tab-btn" data-bag-tab="chick">小鸡</button>
+          <button class="tab-btn" data-bag-tab="adultChicken">成年鸡</button>
+          <button class="tab-btn" data-bag-tab="tool">工具</button>
+        </div>
+
+        <input
+          class="search-input"
+          id="bag-search"
+          type="text"
+          placeholder="搜索当前分类"
+        />
+
+        <div class="shop-content" id="bag-content">
+          <!-- 背包内容由 JavaScript 生成 -->
+        </div>
+      </div>
+      <div id="bag-inspect" style="display: none">
+        <img id="bag-inspect-img" src="" alt="" />
+      </div>
+    </div>
+    <script src="data.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>
