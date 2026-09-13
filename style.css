@@ -249,7 +249,6 @@ html, body {
   width: 100px;
   height: 100px;
   object-fit: contain;
-  pointer-events: none;
 }
 
 .highlight {

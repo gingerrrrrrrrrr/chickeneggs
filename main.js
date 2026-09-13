@@ -33,23 +33,25 @@ let hatchStations = [];
 // 育雏场景中的大格子
 let broodStations = [];
 
-// 孵蛋场景中的普通蛋位数据（暂时）
-let itemSlots = [
-  {
-    slotId: 0,
-    slotType: "egg",
-    itemId: null,
-    containerId: "scene_egg_slots",
-    locationType: locationTypes.sceneSlot,
-  },
-  {
-    slotId: 1,
-    slotType: "egg",
-    itemId: null,
-    containerId: "scene_egg_slots",
-    locationType: locationTypes.sceneSlot,
-  },
-];
+const bagSlot = {
+  slotId: "bag",
+  slotType: "bag",
+  singleAcceptTypes: [],
+  singleItemId: null,
+  singleRequired: false,
+  groupAcceptTypes: [
+    "egg",
+    "chick",
+    "adultFemale",
+    "adultMale",
+    "incubator",
+    "tool",
+  ],
+  groupItemIds: [],
+  groupCapacity: 999,
+  positionPoints: [],
+  locationType: locationTypes.bag,
+};
 
 // 场景列表，按从左到右的顺序排列
 const scenes = [
@@ -73,9 +75,13 @@ let inspectMode = false;
 let zoomScale = 1.5;
 let lastTouchDistance = 0;
 let justZoomed = false;
-let selectedBagItem = null;
-let selectedSlotItem = null;
-let selectedBroodChicken = null;
+// let selectedBagItem = null;
+// let selectedSlotItem = null;
+// let selectedBroodChicken = null;
+let lastClickTime = 0; //双击判定
+let currentInspectedTarget = null; //双击打开的物品
+let draggingItem = null; //拖动的物品
+let dragMoved = false; //距离判定是否算拖动
 const moneyDisplay = document.getElementById("money");
 const levelDisplay = document.getElementById("level");
 const shopPanel = document.getElementById("shop-panel");
@@ -103,7 +109,7 @@ function handleSwipe() {
   const distance = touchEndX - touchStartX;
 
   // 滑动距离太短就忽略
-  if (Math.abs(distance) < 50) {
+  if (Math.abs(distance) < 100) {
     return;
   }
 
@@ -136,6 +142,15 @@ function initScenes() {
   });
   sceneNameDisplay.textContent = sceneNames[currentSceneIndex];
 }
+
+//双击判定
+function isDoubleClick() {
+  const now = Date.now();
+  const isDouble = now - lastClickTime < 300;
+  lastClickTime = now;
+  return isDouble;
+}
+
 // 更新顶部状态栏
 function updateTopBar() {
   moneyDisplay.textContent = "资金：" + player.money;
@@ -215,7 +230,8 @@ function renderMainSceneStatus() {
 // 保证孵蛋场景大格子的数量始终比已放入场景的孵化器多一个
 function ensureHatchStation() {
   const occupiedCount = hatchStations.filter(
-    (station) => station.itemId !== null,
+    (station) =>
+      station.singleItemId !== null || station.groupItemIds.length > 0,
   ).length;
 
   const targetCount = occupiedCount + 1;
@@ -224,61 +240,141 @@ function ensureHatchStation() {
     hatchStations.push({
       slotId: Date.now() + Math.random(),
       slotType: "hatchStation",
-      itemId: null,
-      containerId: "hatch_station_area",
+      singleItemId: null,
+      singleRequired: true,
+      singleAcceptTypes: ["incubator", "adultFemale"],
+      groupItemIds: [],
+      groupCapacity: 20,
+      groupAcceptTypes: ["egg", "chick"],
+      positionPoints: [],
       locationType: locationTypes.sceneSlot,
     });
   }
 
   while (hatchStations.length > targetCount) {
-    hatchStations.pop();
+    // 从后往前找第一个空着的格子
+    let emptyIndex = -1;
+    for (let i = hatchStations.length - 1; i >= 0; i--) {
+      const s = hatchStations[i];
+      if (s.singleItemId === null && s.groupItemIds.length === 0) {
+        emptyIndex = i;
+        break;
+      }
+    }
+
+    // 找不到空格子就停止，避免误删还在用的格子
+    if (emptyIndex === -1) break;
+
+    hatchStations.splice(emptyIndex, 1);
   }
 }
 
 // 保证育雏场景大格子数量始终比已占用的大格子多一个
 function ensureBroodStation() {
   const occupiedCount = broodStations.filter(
-    (station) => station.chickenIds.length > 0,
+    (station) =>
+      station.singleItemId !== null || station.groupItemIds.length > 0,
   ).length;
 
   const targetCount = occupiedCount + 1;
 
   while (broodStations.length < targetCount) {
+    //对于新增的进行生成
+    const layout =
+      broodLayouts[Math.floor(Math.random() * broodLayouts.length)];
+
     broodStations.push({
-      stationId: Date.now() + Math.random(),
-      chickenIds: [],
-      hasMotherHen: false,
+      slotId: Date.now() + Math.random(),
+      slotType: "broodStation",
+      singleItemId: null,
+      singleRequired: false,
+      singleAcceptTypes: ["adultFemale"],
+      singlePosition: { ...layout.singlePosition },
+      groupItemIds: [],
+      groupCapacity: layout.groupPoints.length,
+      groupAcceptTypes: ["chick"],
+      positionPoints: layout.groupPoints.map((p) => ({
+        pointId: p.pointId,
+        x: p.x,
+        y: p.y,
+        rotation: p.rotation,
+        occupiedBy: null,
+      })),
+      locationType: locationTypes.sceneSlot,
+      layoutId: layout.layoutId,
     });
   }
 
   while (broodStations.length > targetCount) {
-    broodStations.pop();
+    // 从后往前找第一个空着的格子
+    let emptyIndex = -1;
+    for (let i = broodStations.length - 1; i >= 0; i--) {
+      const s = broodStations[i];
+      if (s.singleItemId === null && s.groupItemIds.length === 0) {
+        emptyIndex = i;
+        break;
+      }
+    }
+
+    // 找不到空格子就停止，避免误删还在用的格子
+    if (emptyIndex === -1) break;
+
+    broodStations.splice(emptyIndex, 1);
   }
 }
 
-// 渲染整个孵蛋场景
+// 渲染整个孵蛋场景（现在有问题需要重写）
 
 function renderHatchScene() {
   const container = document.getElementById("hatch-grid");
   let html = "";
 
   for (const station of hatchStations) {
-    if (station.itemId !== null) {
-      const incubator = incubators.find((inc) => inc.id === station.itemId);
+    if (station.singleItemId !== null) {
+      const incubator = incubators.find(
+        (inc) => inc.id === station.singleItemId,
+      );
 
-      if (incubator) {
+      const broodyHen = adultChickens.find(
+        (c) => String(c.id) === String(station.singleItemId),
+      );
+
+      if (incubator || broodyHen) {
+        const singleItem = incubator || broodyHen;
+        let pointsHTML = "";
+        for (const point of station.positionPoints) {
+          if (point.occupiedBy === null) {
+            pointsHTML += `
+      <img class="slot-placeholder" src="${slotTypes.eggSlot.placeholderImage}"
+        style="position: absolute; left: ${point.x}px; top: ${point.y}px; transform: rotate(${point.rotation}deg);">
+    `;
+          } else {
+            const individual =
+              eggs.find((e) => e.id == point.occupiedBy) ||
+              chicks.find((c) => c.id == point.occupiedBy);
+
+            if (individual) {
+              pointsHTML += `
+    <img class="slot-item-img" src="${individual.image}"
+      data-id="${individual.id}" data-type="${individual.type}"
+      data-slot-id="${station.slotId}" data-point-id="${point.pointId}"
+      style="position: absolute; left: ${point.x}px; top: ${point.y}px; transform: rotate(${point.rotation}deg);">
+  `;
+            }
+          }
+        }
+
         html += `
-          <div class="item-slot" id="hatch-station-${station.slotId}" data-slot="${station.slotId}" data-slot-type="${station.slotType}" style="width: 340px; min-height: 400px; border: 1px solid #d8cfc0; border-radius: 12px; position: relative; display: flex; justify-content: center; align-items: center;">
-            <img src="${incubator.image}" style="width: 300px; height: 300px; object-fit: contain;">
-            ${renderSlots(incubator.slots)}
-          </div>
-        `;
+<div class="item-slot" id="hatch-station-${station.slotId}" data-slot-id="${station.slotId}" data-slot-type="${station.slotType}" style="width: 340px; min-height: 400px; border: 1px solid #d8cfc0; border-radius: 12px; position: relative;">
+<img src="${singleItem.image}" data-id="${singleItem.id}" data-type="${singleItem.type}" style="width: 300px; height: 300px; object-fit: contain; position: absolute; left: 20px; top: 50px;">
+${pointsHTML}
+</div>
+`;
       }
     } else {
       html += `
-        <div class="item-slot" id="hatch-station-${station.slotId}" data-slot="${station.slotId}" data-slot-type="${station.slotType}" style="width: 340px; min-height: 160px; border: 1px dashed #d8cfc0; border-radius: 12px; display: flex; justify-content: center; align-items: center; color: #8a8075; position: relative;">
+        <div class="item-slot" id="hatch-station-${station.slotId}" data-slot-id="${station.slotId}" data-slot-type="${station.slotType}" style="width: 340px; min-height: 160px; border: 1px dashed #d8cfc0; border-radius: 12px; display: flex; justify-content: center; align-items: center; color: #8a8075; position: relative;">
           <span>放入孵化器或抱窝母鸡</span>
-          <button class="observe-btn" style="display: none; position: absolute; left: 5px; bottom: 5px;">观察</button>
         </div>
       `;
     }
@@ -287,7 +383,7 @@ function renderHatchScene() {
   container.innerHTML = html;
 }
 
-// 渲染整个育雏场景
+// 渲染整个育雏场景（目前有问题需要重写）
 function renderBroodScene() {
   const container = document.getElementById("brood-grid");
   if (!container) return;
@@ -297,29 +393,47 @@ function renderBroodScene() {
   for (const station of broodStations) {
     let chickensHTML = "";
 
-    for (const chickenId of station.chickenIds) {
-      const chicken =
-        chicks.find((c) => c.id === chickenId) ||
-        adultChickens.find((c) => c.id === chickenId);
-
-      if (chicken) {
+    if (station.singleItemId !== null) {
+      const singleChicken = adultChickens.find(
+        (c) => String(c.id) === String(station.singleItemId),
+      );
+      if (singleChicken) {
+        const sx = station.singlePosition?.x ?? 0;
+        const sy = station.singlePosition?.y ?? 0;
         chickensHTML += `
-          <div class="brood-chicken" data-chicken-id="${chicken.id}" style="position: relative; display: inline-block; margin: 4px;">
-            <img src="${chicken.image}" style="width: 80px; height: 80px; object-fit: contain;">
-            <button class="observe-btn" style="display: none; position: absolute; left: 2px; bottom: 2px;">观察</button>
+          <div class="brood-chicken" data-id="${singleChicken.id}" data-type="${singleChicken.type}" style="position: absolute; left: ${sx}px; top: ${sy}px;">
+            <img src="${singleChicken.image}" style="width: 80px; height: 80px; object-fit: contain;">
           </div>
         `;
       }
     }
 
+    for (const chickenId of station.groupItemIds) {
+      const chicken =
+        chicks.find((c) => c.id === chickenId) ||
+        adultChickens.find((c) => c.id === chickenId);
+
+      if (chicken) {
+        const px = chicken.location.x ?? 0;
+        const py = chicken.location.y ?? 0;
+        chickensHTML += `
+          <div class="brood-chicken" data-id="${chicken.id}" data-type="${chicken.type}" style="position: absolute; left: ${px}px; top: ${py}px;">
+            <img src="${chicken.image}" style="width: 80px; height: 80px; object-fit: contain;">
+          </div>
+        `;
+      }
+    }
+
+    const hasContent =
+      station.groupItemIds.length > 0 || station.singleItemId !== null;
+
+    const stationStyle = hasContent
+      ? "width: 340px; height: 340px; border: 1px dashed #c9bfae; border-radius: 12px; position: relative;"
+      : "width: 340px; min-height: 160px; border: 1px dashed #c9bfae; border-radius: 12px; display: flex; justify-content: center; align-items: center; color: #8a8075;";
+
     html += `
-      <div class="brood-station" id="brood-station-${station.stationId}" data-station-id="${station.stationId}" style="width: 340px; min-height: 160px; border: 1px dashed #c9bfae; border-radius: 12px; padding: 10px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center;">
-        ${chickensHTML}
-        ${
-          station.chickenIds.length === 0
-            ? '<span style="color: #8a8075;">放入小鸡或母鸡</span>'
-            : ""
-        }
+      <div class="brood-station" id="brood-station-${station.slotId}" data-slot-id="${station.slotId}" data-slot-type="${station.slotType}" style="${stationStyle}">
+        ${hasContent ? chickensHTML : "放入小鸡或母鸡"}
       </div>
     `;
   }
@@ -327,99 +441,271 @@ function renderBroodScene() {
   container.innerHTML = html;
 }
 
-// 渲染大格子里的孵化器或抱窝母鸡，目前没用可以删了
-function renderIncubatorOrHen(station) {
-  if (station.itemId === null) return "";
+//辅助函数，用来根据槽位 id 找到目标槽位对象
+function findTargetSlot(slotId) {
+  if (slotId === "bag") return bagSlot;
 
-  const incubator = incubators.find((inc) => inc.id === station.itemId);
-  if (!incubator) return "";
+  const allSlots = [...hatchStations, ...broodStations];
 
-  let slotsHTML = "";
+  return allSlots.find((s) => String(s.slotId) === String(slotId)) || null;
+}
 
-  incubator.slots.forEach((slot, index) => {
-    const layout = incubator.slotLayout[index];
-    const x = layout ? layout.x : 0;
-    const y = layout ? layout.y : 0;
+//统一移动函数
+function moveDraggedItemToSlot(
+  draggingId,
+  draggingType,
+  targetSlotId,
+  dropX,
+  dropY,
+) {
+  const itemArray = slotItemArrays[draggingType];
+  if (!itemArray) return false;
 
-    const typeInfo = slotTypes[slot.slotType];
-    let imgSrc = typeInfo.placeholderImage;
-    let imgClass = "slot-placeholder";
+  const item = itemArray.find((i) => i.id == draggingId);
+  if (!item) return false;
+  // console.log(
+  //   "[移动开始] draggingId =",
+  //   draggingId,
+  //   "draggingType =",
+  //   draggingType,
+  // );
+  // console.log(
+  //   "[移动开始] 找到实例 =",
+  //   item.id,
+  //   "当前 location =",
+  //   JSON.parse(JSON.stringify(item.location)),
+  // );
 
-    if (slot.itemId !== null) {
-      const itemArray = slotItemArrays[slot.slotType];
-      const item = itemArray.find((i) => i.id === slot.itemId);
-      if (item && item.image) {
-        imgSrc = item.image;
-        imgClass = "slot-item-img";
+  const targetSlot = findTargetSlot(targetSlotId);
+  if (!targetSlot) return false;
+
+  const isSingleType = targetSlot.singleAcceptTypes.includes(draggingType);
+  const isGroupType = targetSlot.groupAcceptTypes.includes(draggingType);
+
+  if (!isSingleType && !isGroupType) return false;
+
+  //如果在孵化位有蛋的时候移动孵化器/母鸡
+  if (draggingType === "incubator" || draggingType === "adultFemale") {
+    if (item.location.slotId !== null && item.location.slotId !== undefined) {
+      const currentSlot = findTargetSlot(item.location.slotId);
+      if (
+        currentSlot &&
+        currentSlot.slotType === "hatchStation" &&
+        currentSlot.groupItemIds.length > 0
+      ) {
+        return false;
+      }
+    }
+  }
+
+  // 如果物品原本在背包里，先把它的 id 从背包的 groupItemIds 里移除
+  if (
+    item.location &&
+    item.location.type === locationTypes.bag &&
+    item.location.slotId === null
+  ) {
+    bagSlot.groupItemIds = bagSlot.groupItemIds.filter(
+      (id) => String(id) !== String(item.id),
+    );
+  }
+
+  // 从旧位置移除，并释放旧点位
+  if (
+    item.location &&
+    item.location.slotId !== null &&
+    item.location.slotId !== undefined
+  ) {
+    const oldSlot = findTargetSlot(item.location.slotId);
+    if (oldSlot) {
+      if (item.location.role === "single") {
+        oldSlot.singleItemId =
+          oldSlot.singleItemId == item.id ? null : oldSlot.singleItemId;
+      } else {
+        oldSlot.groupItemIds = oldSlot.groupItemIds.filter(
+          (id) => id != item.id,
+        );
+      }
+
+      if (
+        item.location.pointId !== null &&
+        item.location.pointId !== undefined
+      ) {
+        const oldPoint = oldSlot.positionPoints.find(
+          (p) => p.pointId === item.location.pointId,
+        );
+        if (oldPoint) oldPoint.occupiedBy = null;
+      }
+    }
+  }
+
+  // 放进单一辅助位置
+  if (isSingleType) {
+    if (targetSlot.singleItemId !== null) return false;
+
+    targetSlot.singleItemId = item.id;
+
+    // 如果是孵蛋格子，读取对应 layout
+    if (targetSlot.slotType === "hatchStation") {
+      let layout = null;
+
+      if (draggingType === "incubator") {
+        layout = item.layout;
+      } else if (draggingType === "adultFemale") {
+        layout = broodyHenLayout;
+      }
+
+      targetSlot.singlePosition = null;
+      targetSlot.positionPoints = [];
+
+      if (layout) {
+        targetSlot.singlePosition = { ...layout.singlePosition };
+        targetSlot.positionPoints = layout.groupPoints.map((p) => ({
+          pointId: p.pointId,
+          x: p.x,
+          y: p.y,
+          rotation: p.rotation,
+          occupiedBy: null,
+        }));
+        targetSlot.groupCapacity = targetSlot.positionPoints.length;
+        targetSlot.layoutId = layout.layoutId;
       }
     }
 
-    slotsHTML += `
-      <div class="item-slot" data-slot="${slot.slotId}" data-slot-type="${slot.slotType}" style="position: absolute; left: ${x}px; top: ${y}px;">
-        <img class="${imgClass}" src="${imgSrc}" alt="放置位">
-      </div>
-    `;
-  });
+    item.location.type = targetSlot.locationType;
+    item.location.slotId = targetSlot.slotId;
+    item.location.pointId = null;
+    item.location.role = "single";
+    return true;
+  }
 
-  return `
-    <img src="${incubator.image}" style="position: absolute; left: 20px; top: 30px; width: 300px; height: 300px; object-fit: contain;">
-    ${slotsHTML}
-  `;
+  // 放进主体群体
+  if (isGroupType) {
+    if (targetSlot.singleRequired && targetSlot.singleItemId === null) {
+      return false;
+    }
+
+    if (targetSlot.groupItemIds.length >= targetSlot.groupCapacity) {
+      return false;
+    }
+
+    let chosenPoint = null;
+
+    // 背包不分配点位
+    if (
+      targetSlot.slotType === "bag" ||
+      targetSlot.positionPoints.length === 0
+    ) {
+      chosenPoint = null;
+    } else {
+      let minDist = Infinity;
+      for (const p of targetSlot.positionPoints) {
+        if (p.occupiedBy !== null) continue;
+        const dx = p.x - (dropX || 0);
+        const dy = p.y - (dropY || 0);
+        const dist = dx * dx + dy * dy;
+        if (dist < minDist) {
+          minDist = dist;
+          chosenPoint = p;
+        }
+      }
+
+      if (!chosenPoint) return false;
+    }
+
+    targetSlot.groupItemIds.push(item.id);
+    item.location.type = targetSlot.locationType;
+    item.location.slotId = targetSlot.slotId;
+    item.location.role = "group";
+
+    if (chosenPoint) {
+      chosenPoint.occupiedBy = item.id;
+      item.location.pointId = chosenPoint.pointId;
+      item.location.x = chosenPoint.x;
+      item.location.y = chosenPoint.y;
+    } else {
+      item.location.pointId = null;
+      item.location.x = 0;
+      item.location.y = 0;
+    }
+    // console.log("[移动成功] 蛋数组 location 一览：");
+    // for (const e of eggs) {
+    //   console.log("  egg", e.id, JSON.parse(JSON.stringify(e.location)));
+    // }
+    return true;
+  }
+
+  return false;
 }
+
+//槽位和可放物品之间的映射
+// const slotAcceptMap = {
+//   eggSlot: ["egg"],
+//   chickSlot: ["chick"],
+//   broodStation: ["chick", "adultFemale"],
+//   hatchStation: ["incubator", "adultFemale"],
+//   adultArea: ["adultFemale", "adultMale"],
+//   bag: ["egg", "chick", "adultFemale", "adultMale", "incubator", "tool"],
+// };
 
 // 槽位类型对应的个体数组
 const slotItemArrays = {
   egg: eggs,
   chick: chicks,
-  adultChicken: adultChickens,
+  adultFemale: adultChickens,
+  adultMale: adultChickens,
+  incubator: incubators,
   tool: tools,
-  hatchStation: incubators, //目前没放母鸡
 };
 
-// 通用槽位渲染函数（返回html版）
-function renderSlots(slots) {
-  let html = "";
+// 通用槽位渲染函数（返回html版）（但是目前只用于孵化器内部的蛋的槽位渲染）
+// function renderSlots(slots) {
+//   let html = "";
 
-  for (const slot of slots) {
-    const typeInfo = slotTypes[slot.slotType];
+//   for (const slot of slots) {
+//     const typeInfo = slotTypes[slot.slotType];
 
-    let imgSrc = typeInfo.placeholderImage;
-    let imgClass = "slot-placeholder";
+//     let imgSrc = typeInfo.placeholderImage;
+//     let imgClass = "slot-placeholder";
 
-    if (slot.itemId !== null) {
-      const itemArray = slotItemArrays[slot.slotType];
+//     let item = null;
 
-      if (itemArray) {
-        const item = itemArray.find((i) => i.id === slot.itemId);
+//     if (slot.itemIdArray.length > 0) {
+//       const acceptedTypes = slotAcceptMap[slot.slotType] || [];
 
-        if (item && item.image) {
-          imgSrc = item.image;
-          imgClass = "slot-item-img";
-        }
-      }
-    }
+//       for (const type of acceptedTypes) {
+//         const arr = slotItemArrays[type];
+//         if (!arr) continue;
+//         item = arr.find((i) => i.id === slot.itemIdArray[0]);
+//         if (item) break;
+//       }
 
-    const hasPosition =
-      typeof slot.x === "number" && typeof slot.y === "number";
+//       if (item && item.image) {
+//         imgSrc = item.image;
+//         imgClass = "slot-item-img";
+//       }
+//     }
 
-    const slotStyle = hasPosition
-      ? `position: absolute; left: ${slot.x}px; top: ${slot.y}px;`
-      : "position: relative;";
+//     const hasPosition =
+//       typeof slot.x === "number" && typeof slot.y === "number";
 
-    const imgStyle = slot.rotation
-      ? `transform: rotate(${slot.rotation}deg);`
-      : "";
+//     const slotStyle = hasPosition
+//       ? `position: absolute; left: ${slot.x}px; top: ${slot.y}px;`
+//       : "position: relative;";
 
-    html += `
-      <div class="item-slot" data-slot="${slot.slotId}" data-slot-type="${slot.slotType}" style="${slotStyle}">
-        <img class="${imgClass}" src="${imgSrc}" alt="放置位" style="${imgStyle}">
-        <button class="observe-btn" style="display: none; position: absolute; left: 5px; bottom: 5px;">观察</button>
-      </div>
-    `;
-  }
+//     const imgStyle = slot.rotation
+//       ? `transform: rotate(${slot.rotation}deg);`
+//       : "";
 
-  return html;
-}
+//     html += `
+//   <div class="item-slot" data-slot-id="${slot.slotId}" data-slot-type="${slot.slotType}" style="${slotStyle}">
+//     ${slot.itemIdArray.length === 0 ? `<img class="${imgClass}" src="${imgSrc}" alt="放置位" style="${imgStyle}">` : ""}
+//   </div>
+//   ${slot.itemIdArray.length > 0 && item ? `<img class="slot-item-img" src="${item.image}" data-id="${item.id}" data-type="${item.type}" style="${slotStyle} ${imgStyle}">` : ""}
+// `;
+//   }
+
+//   return html;
+// }
 
 // 渲染背包内容
 function renderBagContent(category, keyword) {
@@ -427,16 +713,13 @@ function renderBagContent(category, keyword) {
 
   let items = [];
 
-  if (keyword) {
-    items = items.filter((item) => item.name.includes(keyword));
-  }
-
   if (category === "egg") {
     for (const egg of eggs) {
       if (egg.location.type !== locationTypes.bag) continue;
       const itemInfo = shopItems.egg.find((item) => item.breed === egg.breed);
       items.push({
         id: egg.id,
+        itemType: egg.type,
         image: egg.image || (itemInfo ? itemInfo.image : ""),
         name: egg.name || (itemInfo ? itemInfo.name : egg.breed),
       });
@@ -449,6 +732,7 @@ function renderBagContent(category, keyword) {
       );
       items.push({
         id: chick.id,
+        itemType: chick.type,
         image: chick.image || (itemInfo ? itemInfo.image : ""),
         name: chick.name || (itemInfo ? itemInfo.name : chick.breed),
       });
@@ -462,6 +746,7 @@ function renderBagContent(category, keyword) {
       );
       items.push({
         id: chicken.id,
+        itemType: chicken.type,
         image: chicken.image || (itemInfo ? itemInfo.image : ""),
         name: chicken.name || (itemInfo ? itemInfo.name : chicken.breed),
       });
@@ -473,6 +758,7 @@ function renderBagContent(category, keyword) {
 
       items.push({
         id: incubator.id,
+        itemType: incubator.type,
         image: incubator.image,
         name: incubator.name,
       });
@@ -485,11 +771,16 @@ function renderBagContent(category, keyword) {
       for (let i = 0; i < tool.quantity; i++) {
         items.push({
           id: tool.id,
+          itemType: tool.type,
           image: itemInfo ? itemInfo.image : "",
           name: itemInfo ? itemInfo.name : tool.id,
         });
       }
     }
+  }
+
+  if (keyword) {
+    items = items.filter((item) => item.name.includes(keyword));
   }
 
   if (items.length === 0) {
@@ -500,10 +791,9 @@ function renderBagContent(category, keyword) {
   let html = '<div class="bag-grid">';
   for (const item of items) {
     html += `
-  <div class="bag-cell" data-type="${category}" data-id="${item.id}" style="position: relative;">
+  <div class="bag-cell" data-bag-category="${category}" data-id="${item.id}" data-type="${item.itemType}" style="position: relative;">
     <img class="shop-item-img" src="${item.image}" alt="${item.name}">
     <div class="bag-item-name">${item.name}</div>
-    <button class="observe-btn" style="display: none; position: absolute; left: 20px; bottom: 25px;">观察</button>
   </div>
 `;
   }
@@ -545,13 +835,6 @@ bagBtn.addEventListener("click", function () {
 // 关闭背包
 closeBagBtn.addEventListener("click", function () {
   bagPanel.style.display = "none";
-  selectedBagItem = null;
-  document
-    .querySelectorAll(".bag-cell")
-    .forEach((c) => c.classList.remove("highlight"));
-  document
-    .querySelectorAll(".item-slot")
-    .forEach((s) => s.classList.remove("highlight"));
 });
 
 // 商店标签切换
@@ -653,565 +936,55 @@ document
 
       player.money -= totalCost;
       updateTopBar();
-      const bagLocation = {
+      obtainItem(itemId, qty, {
         type: locationTypes.bag,
-        containerId: null,
-        slotId: null,
-      };
-
-      obtainItem(itemId, qty, bagLocation);
+        slotId: "bag",
+        pointId: null,
+        role: "group",
+        x: 0,
+        y: 0,
+        z: 0,
+      });
       showToast("购买成功");
       renderMainSceneStatus();
     }
   });
 
-//背包物品点击选中/取消选中
-document
-  .getElementById("bag-content")
-  .addEventListener("click", function (event) {
-    if (event.target.classList.contains("observe-btn")) return;
-    const cell = event.target.closest(".bag-cell");
-    if (!cell) {
-      selectedBagItem = null;
-      document.querySelectorAll(".observe-btn").forEach((btn) => {
-        btn.style.display = "none";
-      });
-      document.querySelectorAll(".bag-cell").forEach((c) => {
-        c.classList.remove("highlight");
-      });
-      return;
-    }
-
-    const wasSelected = cell.classList.contains("highlight");
-
-    if (wasSelected) {
-      selectedBagItem = null;
-      cell.classList.remove("highlight");
-      document
-        .querySelectorAll(".observe-btn")
-        .forEach((btn) => (btn.style.display = "none"));
-      updateSlotHighlights();
-      return;
-    }
-
-    const img = cell.querySelector("img");
-    if (!img) return;
-
-    // 隐藏所有观察按钮
-    document.querySelectorAll(".observe-btn").forEach((btn) => {
-      btn.style.display = "none";
-    });
-
-    const observeBtn = cell.querySelector(".observe-btn");
-    observeBtn.style.display = "block";
-
-    // 取消所有背包物品的高亮
-    document.querySelectorAll(".bag-cell").forEach((c) => {
-      c.classList.remove("highlight");
-    });
-
-    // 高亮当前选中格子
-    cell.classList.add("highlight");
-
-    selectedBagItem = {
-      id: Number(cell.getAttribute("data-id")),
-      image: img.src,
-      alt: img.alt,
-      name: cell.querySelector(".bag-item-name").textContent,
-      observeBtn: observeBtn,
-      type: cell.getAttribute("data-type"),
-    };
-
-    updateSlotHighlights();
-  });
-
-// 点击场景槽位，尝试放入选中的背包物品
-document
-  .getElementById("hatch-grid")
-  .addEventListener("click", function (event) {
-    if (event.target.classList.contains("observe-btn")) return;
-    const slotElement = event.target.closest(".item-slot");
-    if (!slotElement) return;
-    const slotId = slotElement.getAttribute("data-slot");
-    const allSceneSlots = [
-      ...itemSlots,
-      ...hatchStations,
-      ...incubators.flatMap((inc) => inc.slots),
-    ];
-
-    const slot = allSceneSlots.find((s) => String(s.slotId) === String(slotId));
-    if (!slot) return;
-    if (slot.itemId !== null) {
-      //如果点击已经选中的非空槽位则取消选择
-      if (
-        selectedSlotItem &&
-        String(selectedSlotItem.slotId) === String(slot.slotId)
-      ) {
-        selectedSlotItem = null;
-
-        slotElement.classList.remove("highlight");
-        const slotObserveBtn = slotElement.querySelector(".observe-btn");
-        if (slotObserveBtn) {
-          slotObserveBtn.style.display = "none";
-        }
-
-        event.stopPropagation();
-        return;
-      }
-      //选中该非空槽位
-      selectedBagItem = null;
-
-      document
-        .querySelectorAll(".bag-cell")
-        .forEach((c) => c.classList.remove("highlight"));
-      document
-        .querySelectorAll(".observe-btn")
-        .forEach((btn) => (btn.style.display = "none"));
-
-      document
-        .querySelectorAll(".item-slot")
-        .forEach((s) => s.classList.remove("highlight"));
-      //槽位加上高光
-      slotElement.classList.add("highlight");
-      //加上显示这个槽位里的观察按钮，并隐藏其他观察按钮
-      document.querySelectorAll(".observe-btn").forEach((btn) => {
-        btn.style.display = "none";
-      });
-
-      const slotObserveBtn = slotElement.querySelector(".observe-btn");
-      if (slotObserveBtn) {
-        slotObserveBtn.style.display = "block";
-      }
-      //槽位内容
-      selectedSlotItem = {
-        slotId: slot.slotId,
-        containerId: slot.containerId,
-        itemId: slot.itemId,
-        slotType: slot.slotType,
-      };
-      //停止聆听
-      event.stopPropagation();
-      return;
-    }
-
-    //先判断是否为孵化器放入大格子
-    if (slot.slotType === "hatchStation") {
-      if (!selectedBagItem || selectedBagItem.type !== "tool") return;
-
-      const incubator = incubators.find((inc) => inc.id === selectedBagItem.id);
-      if (!incubator) return;
-      slot.itemId = incubator.id;
-
-      incubator.location = {
-        type: slot.locationType,
-        containerId: slot.containerId,
-        slotId: slot.slotId,
-      };
-
-      selectedBagItem = null;
-      document
-        .querySelectorAll(".item-slot")
-        .forEach((s) => s.classList.remove("highlight"));
-      document
-        .querySelectorAll(".bag-cell")
-        .forEach((c) => c.classList.remove("highlight"));
-      document
-        .querySelectorAll(".observe-btn")
-        .forEach((btn) => (btn.style.display = "none"));
-
-      ensureHatchStation();
-      renderBagContent(currentBagCategory, bagSearchInput.value);
-      renderHatchScene();
-      renderMainSceneStatus();
-      event.stopPropagation();
-      return;
-    }
-
-    //如果点击空位置，把非空槽位的内容放入，或者取消已选择的非空槽位
-    if (!selectedBagItem || selectedBagItem.type !== slot.slotType) {
-      if (selectedSlotItem && selectedSlotItem.slotType === slot.slotType) {
-        const fromSlot = itemSlots.find(
-          (s) => String(s.slotId) === String(selectedSlotItem.slotId),
-        );
-        if (fromSlot && fromSlot.itemId !== null) {
-          const itemArray = slotItemArrays[slot.slotType];
-          const item = itemArray.find((i) => i.id === fromSlot.itemId);
-          if (item) {
-            slot.itemId = fromSlot.itemId;
-            fromSlot.itemId = null;
-
-            item.location = {
-              type: slot.locationType,
-              containerId: slot.containerId,
-              slotId: slot.slotId,
-            };
-          }
-        }
-
-        selectedSlotItem = null;
-
-        document
-          .querySelectorAll(".item-slot")
-          .forEach((s) => s.classList.remove("highlight"));
-        document
-          .querySelectorAll(".observe-btn")
-          .forEach((btn) => (btn.style.display = "none"));
-
-        renderHatchScene();
-        renderMainSceneStatus();
-
-        event.stopPropagation();
-        return;
-      }
-
-      if (selectedSlotItem) {
-        selectedSlotItem = null;
-
-        document
-          .querySelectorAll(".item-slot")
-          .forEach((s) => s.classList.remove("highlight"));
-        document
-          .querySelectorAll(".observe-btn")
-          .forEach((btn) => (btn.style.display = "none"));
-      }
-      return;
-    }
-
-    if (!selectedBagItem) return;
-
-    if (selectedBagItem.type !== slot.slotType) return;
-
-    const itemArray = slotItemArrays[slot.slotType];
-    if (!itemArray) return;
-
-    const itemIndex = itemArray.findIndex(
-      (item) => item.id === selectedBagItem.id,
-    );
-    if (itemIndex === -1) return;
-
-    const item = itemArray[itemIndex];
-    slot.itemId = item.id;
-
-    item.location = {
-      type: slot.locationType,
-      containerId: slot.containerId,
-      slotId: slot.slotId,
-    };
-
-    selectedBagItem = null;
-    document
-      .querySelectorAll(".item-slot")
-      .forEach((s) => s.classList.remove("highlight"));
-    document
-      .querySelectorAll(".bag-cell")
-      .forEach((c) => c.classList.remove("highlight"));
-    document
-      .querySelectorAll(".observe-btn")
-      .forEach((btn) => (btn.style.display = "none"));
-
-    renderBagContent(currentBagCategory, bagSearchInput.value);
-    renderHatchScene();
-    renderMainSceneStatus();
-  });
-
-//给背包面板添加点击监听，识别“是否点击了背包content”。
-document
-  .getElementById("bag-panel")
-  .addEventListener("click", function (event) {
-    if (!event.target.closest("#bag-content")) return;
-
-    //如果点击育雏鸡
-    if (selectedBroodChicken) {
-      const chicken =
-        chicks.find((c) => c.id === selectedBroodChicken.chickenId) ||
-        adultChickens.find((c) => c.id === selectedBroodChicken.chickenId);
-
-      if (chicken) {
-        const station = broodStations.find((s) =>
-          s.chickenIds.includes(chicken.id),
-        );
-
-        if (station) {
-          station.chickenIds = station.chickenIds.filter(
-            (id) => id !== chicken.id,
-          );
-
-          if (
-            station.hasMotherHen &&
-            !station.chickenIds.some((id) => {
-              const c = adultChickens.find((ac) => ac.id === id);
-              return c && c.gender === "female" && c.age === "adult";
-            })
-          ) {
-            station.hasMotherHen = false;
-          }
-
-          chicken.location = {
-            type: locationTypes.bag,
-            containerId: null,
-            slotId: null,
-          };
-        }
-      }
-
-      selectedBroodChicken = null;
-      document.querySelectorAll(".brood-chicken").forEach((el) => {
-        el.classList.remove("highlight");
-      });
-
-      ensureBroodStation();
-      renderBroodScene();
-      renderBagContent(currentBagCategory, bagSearchInput.value);
-      renderMainSceneStatus();
-      return;
-    }
-
-    if (!selectedSlotItem) return;
-
-    const allSceneSlots = [
-      ...itemSlots,
-      ...hatchStations,
-      ...incubators.flatMap((inc) => inc.slots),
-    ];
-
-    const slot = allSceneSlots.find(
-      (s) => String(s.slotId) === String(selectedSlotItem.slotId),
-    );
-    if (!slot) return;
-
-    const itemArray = slotItemArrays[slot.slotType];
-    if (!itemArray) return;
-
-    const item = itemArray.find((i) => i.id === slot.itemId);
-    if (!item) return;
-
-    item.location = {
-      type: locationTypes.bag,
-      containerId: null,
-      slotId: null,
-    };
-
-    //在收回孵化器之前，先检查它里面的槽位是否全部为空
-    if (slot.slotType === "hatchStation") {
-      const incubator = incubators.find((inc) => inc.id === slot.itemId);
-      if (incubator) {
-        const hasEgg = incubator.slots.some((s) => s.itemId !== null);
-        if (hasEgg) {
-          showToast("还没清空呢");
-          return;
-        }
-      }
-    }
-
-    slot.itemId = null;
-
-    //（测试版）如果是从·孵化器中把干了的小鸡拿出来，就把孵化器槽位变回蛋类型
-    if (
-      slot.locationType === locationTypes.incubator &&
-      slot.slotType === "chick"
-    ) {
-      slot.slotType = "egg";
-    }
-
-    selectedSlotItem = null;
-
-    document
-      .querySelectorAll(".item-slot")
-      .forEach((s) => s.classList.remove("highlight"));
-    //如果收回的是孵化器，则改变孵化区域大格子数目
-    if (slot.slotType === "hatchStation") {
-      ensureHatchStation();
-    }
-    renderHatchScene();
-    renderBagContent(currentBagCategory, bagSearchInput.value);
-    renderMainSceneStatus();
-  });
-
-//点击场景空白处或商店区域时取消场景选中
+//全局检测双击，提取id和类型
 document.addEventListener("click", function (event) {
-  if (event.target.closest(".item-slot")) return;
-  if (event.target.closest("#bag-panel")) return;
-  if (event.target.closest(".observe-btn")) return;
+  if (!isDoubleClick()) return;
 
-  selectedSlotItem = null;
-  selectedBagItem = null;
-  selectedBroodChicken = null;
+  const targetEl = event.target.closest("[data-id][data-type]");
+  console.log("双击目标:", targetEl);
+  if (!targetEl) return;
 
-  document
-    .querySelectorAll(".item-slot")
-    .forEach((s) => s.classList.remove("highlight"));
-  document
-    .querySelectorAll(".bag-cell")
-    .forEach((c) => c.classList.remove("highlight"));
-  document.querySelectorAll(".brood-chicken").forEach((el) => {
-    el.classList.remove("highlight");
-  });
-  document
-    .querySelectorAll(".observe-btn")
-    .forEach((btn) => (btn.style.display = "none"));
-});
+  const id = targetEl.getAttribute("data-id");
+  const type = targetEl.getAttribute("data-type");
 
-//让育雏大格子支持点击，并判断是否放入背包选中的鸡。
-document
-  .getElementById("brood-grid")
-  .addEventListener("click", function (event) {
-    //检测是否点击到鸡的观察按钮
-    if (event.target.classList.contains("observe-btn")) return;
-    //检测是否点击到鸡
-    const chickenElement = event.target.closest(".brood-chicken");
-    if (chickenElement && !selectedBagItem) {
-      const chickenId = chickenElement.getAttribute("data-chicken-id");
+  let target = null;
 
-      //如果点击的是同一只鸡就取消选中
-      if (
-        selectedBroodChicken &&
-        String(selectedBroodChicken.chickenId) === String(chickenId)
-      ) {
-        selectedBroodChicken = null;
-        chickenElement.classList.remove("highlight");
-        const btn = chickenElement.querySelector(".observe-btn");
-        if (btn) btn.style.display = "none";
-        event.stopPropagation();
-        return;
-      }
-
-      document.querySelectorAll(".brood-chicken").forEach((el) => {
-        el.classList.remove("highlight");
-      });
-
-      chickenElement.classList.add("highlight");
-
-      selectedBroodChicken = {
-        chickenId: Number(chickenId),
-      };
-
-      document.querySelectorAll(".observe-btn").forEach((btn) => {
-        btn.style.display = "none";
-      });
-
-      const observeBtn = chickenElement.querySelector(".observe-btn");
-      if (observeBtn) {
-        observeBtn.style.display = "block";
-      }
-
-      event.stopPropagation();
-      return;
-    }
-
-    const stationElement = event.target.closest(".brood-station");
-    if (!stationElement) return;
-
-    //如果点击大格子空白处就取消选中的育雏鸡（目前逻辑已经转移到监听全局）
-    // if (selectedBroodChicken) {
-    //   selectedBroodChicken = null;
-    //   document.querySelectorAll(".brood-chicken").forEach((el) => {
-    //     el.classList.remove("highlight");
-    //   });
-    //   document.querySelectorAll(".observe-btn").forEach((btn) => {
-    //     btn.style.display = "none";
-    //   });
-    //   return;
-    // }
-
-    const stationId = stationElement.getAttribute("data-station-id");
-    const station = broodStations.find(
-      (s) => String(s.stationId) === String(stationId),
-    );
-    if (!station) return;
-
-    if (!selectedBagItem) return;
-
-    if (
-      selectedBagItem.type !== "chick" &&
-      selectedBagItem.type !== "adultChicken"
-    )
-      return;
-
-    const chicken =
-      chicks.find((c) => c.id === selectedBagItem.id) ||
-      adultChickens.find((c) => c.id === selectedBagItem.id);
-
-    if (!chicken) return;
-
-    if (chicken.age === "adult" && chicken.gender === "male") {
-      showToast("成年公鸡不能放入育雏区");
-      return;
-    }
-
-    if (chicken.age === "adult" && chicken.gender === "female") {
-      const hasMother = station.chickenIds.some((id) => {
-        const c = adultChickens.find((ac) => ac.id === id);
-        return c && c.age === "adult" && c.gender === "female";
-      });
-
-      if (hasMother) {
-        showToast("这个育雏区已经有一只带崽母鸡了");
-        return;
-      }
-    }
-
-    station.chickenIds.push(chicken.id);
-
-    if (chicken.age === "adult" && chicken.gender === "female") {
-      station.hasMotherHen = true;
-    }
-
-    chicken.location = {
-      type: locationTypes.sceneSlot,
-      containerId: "brood-grid",
-      slotId: station.stationId,
-    };
-
-    selectedBagItem = null;
-    document
-      .querySelectorAll(".bag-cell")
-      .forEach((c) => c.classList.remove("highlight"));
-    document
-      .querySelectorAll(".observe-btn")
-      .forEach((btn) => (btn.style.display = "none"));
-
-    ensureBroodStation();
-    renderBroodScene();
-    renderBagContent(currentBagCategory, bagSearchInput.value);
-    renderMainSceneStatus();
-  });
-
-// 全局观察按钮点击
-document.addEventListener("click", function (event) {
-  if (!event.target.classList.contains("observe-btn")) return;
-
-  if (selectedBagItem) {
-    openInspect(selectedBagItem.image, selectedBagItem.alt);
-    return;
+  const itemArray = slotItemArrays[type];
+  if (itemArray) {
+    target = itemArray.find((i) => i.id == id);
   }
 
-  if (selectedSlotItem) {
-    const itemArray = slotItemArrays[selectedSlotItem.slotType];
-    const item = itemArray.find((i) => i.id === selectedSlotItem.itemId);
-    if (item && item.image) {
-      openInspect(item.image, item.name || "");
-    }
-  }
-
-  if (selectedBroodChicken) {
-    const chicken =
-      chicks.find((c) => c.id === selectedBroodChicken.chickenId) ||
-      adultChickens.find((c) => c.id === selectedBroodChicken.chickenId);
-    if (chicken && chicken.image) {
-      openInspect(chicken.image, chicken.name || "");
-      return;
-    }
+  if (target) {
+    openInspect(target);
   }
 });
 
-//进入大图
-function openInspect(imageSrc, imageAlt) {
-  bagInspectImg.src = imageSrc;
-  bagInspectImg.alt = imageAlt;
+//进入观察界面
+function openInspect(target) {
+  currentInspectedTarget = target;
+
+  bagInspectImg.src = target.image;
+  bagInspectImg.alt = target.name || "";
   bagInspectImg.style.transform = "scale(1.5)";
   zoomScale = 1.5;
   inspectMode = true;
   bagInspectLayer.style.display = "flex";
+
+  // 以后在这里继续加：状态、年龄、是否可售、出售按钮等
 }
 
 //双指缩放
@@ -1251,12 +1024,133 @@ bagInspectLayer.addEventListener("click", function () {
 
   if (inspectMode) {
     bagInspectLayer.style.display = "none";
+    currentInspectedTarget = null;
     // document.querySelectorAll(".observe-btn").forEach((btn) => {
     //   btn.style.display = "none";
     // });
     // selectedBagItem = null;
     inspectMode = false;
   }
+});
+
+//全局检查拖动开始
+document.addEventListener("touchstart", function (event) {
+  const targetEl = event.target.closest("[data-id][data-type]");
+  if (!targetEl) return;
+  sceneContainer.style.overflowX = "hidden"; //防止触发切换屏幕
+  const bagContent = document.getElementById("bag-content");
+  if (bagContent) bagContent.style.overflowY = "hidden"; //防止滑动背包
+
+  dragMoved = false;
+  draggingItem = {
+    id: targetEl.getAttribute("data-id"),
+    type: targetEl.getAttribute("data-type"),
+    startX: event.touches[0].clientX,
+    startY: event.touches[0].clientY,
+  };
+  console.log(
+    "[拖动开始] 命中元素 =",
+    targetEl,
+    "id =",
+    draggingItem.id,
+    "type =",
+    draggingItem.type,
+  );
+});
+
+//拖动中
+document.addEventListener("touchmove", function (event) {
+  if (!draggingItem) return;
+
+  const dx = event.touches[0].clientX - draggingItem.startX;
+  const dy = event.touches[0].clientY - draggingItem.startY;
+
+  if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+    dragMoved = true;
+  }
+});
+
+//拖动结束
+document.addEventListener("touchend", function (event) {
+  if (!draggingItem) return;
+
+  if (!dragMoved) {
+    draggingItem = null;
+    sceneContainer.style.overflowX = "";
+    const bagContent = document.getElementById("bag-content");
+    if (bagContent) bagContent.style.overflowY = "";
+    return;
+  }
+
+  const touch = event.changedTouches[0];
+  const dropTarget = document
+    .elementFromPoint(touch.clientX, touch.clientY)
+    ?.closest("[data-slot-id]");
+
+  if (!dropTarget) {
+    draggingItem = null;
+    sceneContainer.style.overflowX = "";
+    const bagContent = document.getElementById("bag-content");
+    if (bagContent) bagContent.style.overflowY = "";
+    return;
+  }
+
+  const targetSlotId = dropTarget.getAttribute("data-slot-id");
+
+  // console.log(
+  //   "[松手] draggingItem =",
+  //   JSON.parse(JSON.stringify(draggingItem)),
+  // );
+  // console.log("[松手] targetSlotId =", targetSlotId);
+
+  console.log(
+    "[拖动结束] draggingItem =",
+    draggingItem,
+    "dragMoved =",
+    dragMoved,
+  );
+  console.log(
+    "[拖动结束] 落点元素 =",
+    document.elementFromPoint(touch.clientX, touch.clientY),
+  );
+
+  const success = moveDraggedItemToSlot(
+    draggingItem.id,
+    draggingItem.type,
+    targetSlotId,
+    touch.clientX,
+    touch.clientY,
+  );
+
+  console.log(
+    "[拖动结束] draggingItem =",
+    draggingItem,
+    "dragMoved =",
+    dragMoved,
+  );
+  console.log(
+    "[拖动结束] 落点元素 =",
+    document.elementFromPoint(touch.clientX, touch.clientY),
+  );
+
+  if (success) {
+    //这里刷新的太多了需要以后修整
+    ensureHatchStation();
+    ensureBroodStation();
+    renderHatchScene();
+    renderBroodScene();
+
+    if (bagPanel.style.display === "flex") {
+      renderBagContent(currentBagCategory, bagSearchInput.value);
+    }
+
+    showToast("移动成功");
+  }
+
+  draggingItem = null;
+  sceneContainer.style.overflowX = "";
+  const bagContent = document.getElementById("bag-content");
+  if (bagContent) bagContent.style.overflowY = "";
 });
 
 // 商店搜索
@@ -1319,6 +1213,7 @@ function createEgg(breedId, initialLocation) {
 
   const egg = {
     id: Date.now() + Math.random(),
+    type: "egg",
     breed: breedId,
     name: eggItemInfo ? eggItemInfo.name : breedInfo.name,
     image: eggItemInfo ? eggItemInfo.image : "",
@@ -1326,42 +1221,87 @@ function createEgg(breedId, initialLocation) {
     fertilized: fertilized,
     canHatch: canHatch,
     peckPosition: Math.random() < breedInfo.bigEndRate ? "bigEnd" : "smallEnd",
+    hatchOffset: hatchOffset,
+    appearanceSeed: Math.random(),
+    statuses: [],
     hatchProgress: {
       stage: "waiting",
       elapsedDays: 0,
     },
-    hatchOffset: hatchOffset,
     stageDays: stageDays,
-    location: initialLocation || {
-      type: locationTypes.bag,
-      containerId: null,
-      slotId: null,
-    },
+    location: initialLocation
+      ? {
+          type: initialLocation.type,
+          containerId: initialLocation.containerId ?? null,
+          slotId: initialLocation.slotId ?? null,
+          pointId: initialLocation.pointId ?? null,
+          role: initialLocation.role ?? "group",
+          x: initialLocation.x ?? 0,
+          y: initialLocation.y ?? 0,
+          z: initialLocation.z ?? 0,
+        }
+      : {
+          type: locationTypes.bag,
+          containerId: null,
+          slotId: null,
+          pointId: null,
+          role: "group",
+          x: 0,
+          y: 0,
+          z: 0,
+        },
   };
 
   return egg;
 }
 
-// 生成一只鸡（目前就等于“买一个鸡”，不包括蛋变成鸡的内容）
+// 生成一只鸡（目前就等于“买一个成年鸡”，不包括蛋变成鸡的内容）
 function createChicken(breedId, gender, age, initialLocation) {
   const breedInfo = breeds[breedId];
 
+  const growthOffset = Math.random();
+  const lifespanSeed = Math.random();
+
+  const chickToYoungDays =
+    breedInfo.growth.chickToYoungDays +
+    growthOffset * breedInfo.growth.youngOffsetMax;
+  const youngToAdultDays =
+    breedInfo.growth.youngToAdultDays +
+    growthOffset * breedInfo.growth.adultOffsetMax;
+  const adultToDeadDays =
+    breedInfo.growth.lifespanDays +
+    lifespanSeed * breedInfo.growth.lifespanOffsetMax;
+
   const chicken = {
     id: Date.now() + Math.random(),
+    type: gender === "female" ? "adultFemale" : "adultMale",
     breed: breedId,
     name: breedInfo.itemNames[
       gender === "female" ? "adultFemale" : "adultMale"
     ],
+    nickname: "",
+    gender: gender,
+    stage: "adult",
+    ageDays: youngToAdultDays,
     image:
       breedInfo.stageImages[gender === "female" ? "adultFemale" : "adultMale"],
-    gender: gender,
-    age: age,
-    ageDays: age === "adult" ? breedInfo.growth.youngToAdultDays : 0,
+    appearanceSeed: Math.random(),
+    growthOffset: growthOffset,
+    lifespanSeed: lifespanSeed,
+    stageDays: {
+      chickToYoung: chickToYoungDays,
+      youngToAdult: youngToAdultDays,
+      adultToDead: adultToDeadDays,
+    },
     statuses: ["healthy"],
     location: initialLocation || {
       type: locationTypes.bag,
-      containerId: null,
       slotId: null,
+      pointId: null,
+      role: "group",
+      x: 0,
+      y: 0,
+      z: 0,
     },
   };
 
@@ -1378,46 +1318,40 @@ function createChicken(breedId, gender, age, initialLocation) {
 function createIncubator(itemInfo) {
   const incubatorId = Date.now() + Math.random();
 
-  const slots = [];
-  const slotLayout = [];
-
-  const capacity = itemInfo.capacity || 6;
-
-  for (let i = 0; i < capacity; i++) {
-    const slotId = Date.now() + Math.random() + i;
-    const layoutInfo = itemInfo.slotLayout[i];
-
-    const x = layoutInfo ? layoutInfo.x : 0;
-    const y = layoutInfo ? layoutInfo.y : 0;
-    const rotation = layoutInfo ? layoutInfo.rotation : 0;
-
-    slots.push({
-      slotId: slotId,
-      slotType: "egg",
-      itemId: null,
-      containerId: incubatorId,
-      locationType: locationTypes.incubator,
-      x: x,
-      y: y,
-      rotation: rotation,
-    });
-
-    slotLayout.push({
-      slotId: slotId,
-      x: x,
-      y: y,
-      rotation: rotation,
-    });
-  }
+  const layout = itemInfo.layout
+    ? {
+        layoutId: itemInfo.layout.layoutId,
+        singlePosition: { ...itemInfo.layout.singlePosition },
+        groupPoints: itemInfo.layout.groupPoints.map((p) => ({
+          pointId: p.pointId,
+          x: p.x,
+          y: p.y,
+          rotation: p.rotation,
+          occupiedBy: null,
+        })),
+      }
+    : {
+        layoutId: "default",
+        singlePosition: { x: 0, y: 0, rotation: 0 },
+        groupPoints: [],
+      };
 
   const incubator = {
     id: incubatorId,
     type: "incubator",
     name: itemInfo.name,
     image: itemInfo.image,
-    capacity: capacity,
-    slots: slots,
-    slotLayout: slotLayout,
+    capacity: layout.groupPoints.length,
+    layout: layout,
+    location: {
+      type: locationTypes.bag,
+      slotId: null,
+      pointId: null,
+      role: "group",
+      x: 0,
+      y: 0,
+      z: 0,
+    },
   };
 
   incubators.push(incubator);
@@ -1441,64 +1375,62 @@ function obtainItem(itemId, quantity, initialLocation) {
 
   if (itemInfo.type === "egg") {
     for (let i = 0; i < quantity; i++) {
-      eggs.push(createEgg(itemInfo.breed, initialLocation));
+      const egg = createEgg(itemInfo.breed, initialLocation);
+      eggs.push(egg);
+      bagSlot.groupItemIds.push(egg.id);
     }
   } else if (itemInfo.type === "chicken") {
     for (let i = 0; i < quantity; i++) {
-      createChicken(itemInfo.breed, itemInfo.gender, itemInfo.age);
+      const chicken = createChicken(
+        itemInfo.breed,
+        itemInfo.gender,
+        itemInfo.age,
+      );
+      bagSlot.groupItemIds.push(chicken.id);
+    }
+  } else if (itemInfo.type === "incubator") {
+    for (let i = 0; i < quantity; i++) {
+      const incubator = createIncubator(itemInfo);
+      bagSlot.groupItemIds.push(incubator.id);
     }
   } else if (itemInfo.type === "tool") {
-    if (itemInfo.id === "basic_incubator") {
-      for (let i = 0; i < quantity; i++) {
-        createIncubator(itemInfo);
-      }
+    const existingTool = tools.find((tool) => tool.id === itemId);
+
+    if (existingTool) {
+      existingTool.quantity += quantity;
     } else {
-      const existingTool = tools.find((tool) => tool.id === itemId);
-      if (existingTool) {
-        existingTool.quantity += quantity;
-      } else {
-        tools.push({
-          id: itemId,
-          quantity: quantity,
-          location: initialLocation || {
-            type: locationTypes.bag,
-            containerId: null,
-            slotId: null,
-          },
-        });
-      }
+      tools.push({
+        id: itemId,
+        type: "tool",
+        name: itemInfo.name,
+        image: itemInfo.image,
+        quantity: quantity,
+        location: {
+          type: locationTypes.bag,
+          slotId: null,
+          pointId: null,
+          role: "group",
+          x: 0,
+          y: 0,
+          z: 0,
+        },
+      });
+      bagSlot.groupItemIds.push(itemId);
     }
   }
+
   if (bagPanel.style.display === "flex") {
     renderBagContent(currentBagCategory);
   }
-}
-
-//选中背包物品时，高光场景内槽位
-function updateSlotHighlights() {
-  document.querySelectorAll(".item-slot").forEach((slot) => {
-    slot.classList.remove("highlight");
-  });
-
-  if (!selectedBagItem) return;
-
-  document.querySelectorAll(".item-slot").forEach((slot) => {
-    const slotType = slot.getAttribute("data-slot-type");
-    if (slotType === selectedBagItem.type) {
-      slot.classList.add("highlight");
-    }
-  });
 }
 
 // 推进天数的影响（测试版）目前只考虑了·孵化器当中的·鸡蛋，和鸡的成长
 function advanceDays(days) {
   gameTime.day += days;
 
-  for (const incubator of incubators) {
-    for (const slot of incubator.slots) {
-      if (slot.itemId === null) continue;
-
-      const egg = eggs.find((e) => e.id === slot.itemId);
+  for (const station of hatchStations) {
+    for (const id of [...station.groupItemIds]) {
+      const egg = eggs.find((e) => e.id === id);
       if (!egg) continue;
 
       egg.hatchProgress.elapsedDays += days;
@@ -1508,13 +1440,7 @@ function advanceDays(days) {
         egg.hatchProgress.stage === "dry" &&
         egg.hatchProgress.elapsedDays >= egg.stageDays.dry
       ) {
-        const chick = hatchEggToChick(egg);
-
-        //临时把孵化槽位改成小鸡类型
-        slot.slotType = "chick";
-        slot.itemId = chick.id;
-
-        continue;
+        hatchEggToChick(egg);
       }
     }
   }
@@ -1599,14 +1525,38 @@ function hatchEggToChick(egg) {
 
   const chick = {
     id: egg.id,
+    type: "chick",
     breed: egg.breed,
     name: breedInfo.itemNames.chick,
-    image: breedInfo.stageImages.dry,
+    nickname: "",
     gender: egg.gender,
-    age: "chick",
+    stage: "chick",
     ageDays: 0,
+    image: breedInfo.stageImages.chick,
+    appearanceSeed: egg.appearanceSeed,
+    growthOffset: egg.hatchOffset,
+    lifespanSeed: Math.random(),
+    stageDays: {
+      chickToYoung:
+        breedInfo.growth.chickToYoungDays +
+        egg.hatchOffset * breedInfo.growth.youngOffsetMax,
+      youngToAdult:
+        breedInfo.growth.youngToAdultDays +
+        egg.hatchOffset * breedInfo.growth.adultOffsetMax,
+      adultToDead:
+        breedInfo.growth.lifespanDays +
+        Math.random() * breedInfo.growth.lifespanOffsetMax,
+    },
     statuses: ["healthy"],
-    location: egg.location,
+    location: {
+      type: egg.location.type,
+      slotId: egg.location.slotId,
+      pointId: egg.location.pointId,
+      role: "group",
+      x: egg.location.x,
+      y: egg.location.y,
+      z: egg.location.z,
+    },
   };
 
   chicks.push(chick);
@@ -1624,12 +1574,12 @@ function updateChickenStage(chicken) {
   const breedInfo = breeds[chicken.breed];
   const growth = breedInfo.growth;
 
-  if (chicken.ageDays < growth.chickToYoungDays) {
-    chicken.age = "chick";
+  if (chicken.ageDays < chicken.stageDays.chickToYoung) {
+    chicken.stage = "chick";
     chicken.name = breedInfo.itemNames.chick;
     chicken.image = breedInfo.stageImages.chick;
-  } else if (chicken.ageDays < growth.youngToAdultDays) {
-    chicken.age = "young";
+  } else if (chicken.ageDays < chicken.stageDays.youngToAdult) {
+    chicken.stage = "young";
     chicken.name =
       chicken.gender === "female"
         ? breedInfo.itemNames.youngFemale
@@ -1639,7 +1589,8 @@ function updateChickenStage(chicken) {
         ? breedInfo.stageImages.youngFemale
         : breedInfo.stageImages.youngMale;
   } else {
-    chicken.age = "adult";
+    chicken.stage = "adult";
+    chicken.type = chicken.gender === "female" ? "adultFemale" : "adultMale";
     chicken.name =
       chicken.gender === "female"
         ? breedInfo.itemNames.adultFemale
@@ -1650,7 +1601,7 @@ function updateChickenStage(chicken) {
         : breedInfo.stageImages.adultMale;
   }
 
-  if (chicken.age === "adult") {
+  if (chicken.stage === "adult") {
     const chickIndex = chicks.findIndex((c) => c.id === chicken.id);
     if (chickIndex !== -1) {
       chicks.splice(chickIndex, 1);
